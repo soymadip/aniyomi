@@ -6,10 +6,9 @@ import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.util.storage.DiskUtil
 import tachiyomi.core.common.storage.nameWithoutExtension
 import tachiyomi.core.common.util.system.ImageUtil
+import tachiyomi.source.local.entries.anime.LocalAnimeSource
 import tachiyomi.source.local.io.anime.LocalAnimeSourceFileSystem
 import java.io.InputStream
-
-private const val DEFAULT_BACKGROUND_NAME = "background.jpg"
 
 actual class LocalAnimeBackgroundManager(
     private val context: Context,
@@ -31,15 +30,13 @@ actual class LocalAnimeBackgroundManager(
             return null
         }
 
-        val targetFile = find(anime.url) ?: directory.createFile(DEFAULT_BACKGROUND_NAME)!!
+        val targetFile = find(anime.url) ?: directory.createFile(LocalAnimeSource.DEFAULT_BACKGROUND_NAME)!!
 
         inputStream.use { input ->
             targetFile.openOutputStream().use { output ->
                 input.copyTo(output)
             }
         }
-
-        DiskUtil.createNoMediaFile(directory, context)
 
         anime.background_url = targetFile.uri.toString()
         return targetFile

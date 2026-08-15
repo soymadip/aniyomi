@@ -265,7 +265,10 @@ actual class LocalAnimeSource(
                     }
 
                     // Generate the preview from the episode if not available
-                    if (this.preview_url == null) {
+                    val thumbnailFile = thumbnailManager.find(anime.url, "${this.name}-$DEFAULT_THUMBNAIL_NAME")
+                    if (thumbnailFile != null) {
+                        this.preview_url = thumbnailFile.uri.toString()
+                    } else if (this.preview_url == null) {
                         try {
                             val tempFileSuffix = anime.title + this.name + DEFAULT_THUMBNAIL_NAME
                             val updateThumbnail: (InputStream) -> Unit = { thumbnailManager.update(anime, this, it) }
@@ -282,7 +285,10 @@ actual class LocalAnimeSource(
             }
 
         // Generate the cover from the first episode found if not available
-        if (anime.thumbnail_url == null || coverManager.find(anime.url) == null) {
+        val existingCover = coverManager.find(anime.url)
+        if (existingCover != null) {
+            anime.thumbnail_url = existingCover.uri.toString()
+        } else if (anime.thumbnail_url == null) {
             try {
                 episodes.lastOrNull()?.let { episode ->
                     val tempFileSuffix = anime.title + DEFAULT_COVER_NAME
@@ -295,7 +301,10 @@ actual class LocalAnimeSource(
         }
 
         // Generate the background from the first episode found if not available
-        if (anime.background_url == null || backgroundManager.find(anime.url) == null) {
+        val existingBackground = backgroundManager.find(anime.url)
+        if (existingBackground != null) {
+            anime.background_url = existingBackground.uri.toString()
+        } else if (anime.background_url == null) {
             try {
                 episodes.lastOrNull()?.let { episode ->
                     val tempFileSuffix = anime.title + DEFAULT_BACKGROUND_NAME
@@ -360,9 +369,11 @@ actual class LocalAnimeSource(
         const val ID = 0L
         const val HELP_URL = "https://aniyomi.org/help/guides/local-anime/"
 
-        private const val DEFAULT_COVER_NAME = "cover.jpg"
-        private const val DEFAULT_BACKGROUND_NAME = "background.jpg"
-        private const val DEFAULT_THUMBNAIL_NAME = "thumbnail.jpg"
+        internal const val DEFAULT_COVER_NAME = "cover.jpg"
+        internal const val DEFAULT_BACKGROUND_NAME = "background.jpg"
+        internal const val DEFAULT_THUMBNAIL_NAME = "thumbnail.jpg"
+        internal const val THUMBNAILS_DIR = ".thumbnails"
+
         private val LATEST_THRESHOLD = TimeUnit.MILLISECONDS.convert(7, TimeUnit.DAYS)
     }
 }
