@@ -72,7 +72,7 @@ actual class LocalAnimeSource(
     private val animeRepository: AnimeRepository by injectLazy()
 
     private val thumbnailScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val thumbnailSemaphore = Semaphore(1)
+    private val thumbnailSemaphore = Semaphore(2)
 
     @Suppress("PrivatePropertyName")
     private val PopularFilters = AnimeFilterList(AnimeOrderBy.Popular(context))
@@ -345,17 +345,17 @@ actual class LocalAnimeSource(
                     thumbnailSemaphore.withPermit {
                         try {
                             val currentCover = coverManager.find(anime.url)
-                            val coverFile = if (currentCover != null) {
+                            val resultCoverFile = if (currentCover != null) {
                                 currentCover
                             } else {
                                 val tempFileSuffix = anime.title + DEFAULT_COVER_NAME
                                 val updateCover: (InputStream) -> Unit = { coverManager.update(anime, it) }
-                                updateImageFromVideo(episode, anime, tempFileSuffix, updateCover)
+                                updateImageFromVideo(episode, anime, tempFileSuffix, updateCover, 600)
                                 coverManager.find(anime.url)
                             }
 
-                            if (coverFile != null) {
-                                val coverUri = coverFile.uri.toString()
+                            if (resultCoverFile != null) {
+                                val coverUri = resultCoverFile.uri.toString()
                                 anime.thumbnail_url = coverUri
                                 val dbAnime = getAnimeByUrlAndSourceId.await(anime.url, ID)
                                 if (dbAnime != null) {
@@ -386,17 +386,17 @@ actual class LocalAnimeSource(
                     thumbnailSemaphore.withPermit {
                         try {
                             val currentBg = backgroundManager.find(anime.url)
-                            val bgFile = if (currentBg != null) {
+                            val resultBgFile = if (currentBg != null) {
                                 currentBg
                             } else {
                                 val tempFileSuffix = anime.title + DEFAULT_BACKGROUND_NAME
                                 val updateBackground: (InputStream) -> Unit = { backgroundManager.update(anime, it) }
-                                updateImageFromVideo(episode, anime, tempFileSuffix, updateBackground)
+                                updateImageFromVideo(episode, anime, tempFileSuffix, updateBackground, 960)
                                 backgroundManager.find(anime.url)
                             }
 
-                            if (bgFile != null) {
-                                val bgUri = bgFile.uri.toString()
+                            if (resultBgFile != null) {
+                                val bgUri = resultBgFile.uri.toString()
                                 anime.background_url = bgUri
                                 val dbAnime = getAnimeByUrlAndSourceId.await(anime.url, ID)
                                 if (dbAnime != null) {
@@ -439,6 +439,7 @@ actual class LocalAnimeSource(
         anime: SAnime,
         tempFileSuffix: String,
         updateImage: (InputStream) -> Unit,
+        targetWidth: Int = 720,
     ) {
         val tempFile = File.createTempFile(
             "tmp_",
@@ -455,11 +456,11 @@ actual class LocalAnimeSource(
             val ffProbe = com.arthenica.ffmpegkit.FFprobeKit.execute(
                 "-v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \"${episodeFilename()}\"",
             )
-            val duration = ffProbe.allLogsAsString.trim().toFloat()
-            val second = duration.toInt() / 2
+            val duration = ffProbe.allLogsAsString.trim().toFloatOrNull() ?: 120f
+            val second = (duration.toInt() / 2).coerceAtLeast(1)
 
             com.arthenica.ffmpegkit.FFmpegKit.execute(
-                "-ss $second -i \"${episodeFilename()}\" -frames:v 1 -update true \"$outFile\" -y",
+                "-ss $second -noaccurate_seek -i \"${episodeFilename()}\" -vf \"scale='min($targetWidth,iw)':-2\" -q:v 3 -frames:v 1 -update true \"$outFile\" -y",
             )
 
             if (tempFile.length() > 0L) {
