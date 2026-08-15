@@ -72,7 +72,7 @@ actual class LocalAnimeSource(
     private val animeRepository: AnimeRepository by injectLazy()
 
     private val thumbnailScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val thumbnailSemaphore = Semaphore(2)
+    private val thumbnailSemaphore = Semaphore(1)
 
     @Suppress("PrivatePropertyName")
     private val PopularFilters = AnimeFilterList(AnimeOrderBy.Popular(context))
