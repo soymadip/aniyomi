@@ -27,10 +27,11 @@ actual class LocalEpisodeThumbnailManager(
         return files
             // Get all file whose names match the episode thumbnail name
             .filter {
-                it.isFile && (
-                    it.name.equals(fileName, ignoreCase = true) ||
-                        it.nameWithoutExtension.equals(nameToMatch, ignoreCase = true)
-                    )
+                it.isFile &&
+                    (
+                        it.name.equals(fileName, ignoreCase = true) ||
+                            it.nameWithoutExtension.equals(nameToMatch, ignoreCase = true)
+                        )
             }
             // Get the first actual image
             .firstOrNull { ImageUtil.isImage(it.name) { it.openInputStream() } }
