@@ -293,7 +293,10 @@ actual class LocalAnimeSource(
                         thumbnailScope.launch {
                             thumbnailSemaphore.withPermit {
                                 try {
-                                    val existingThumbnail = thumbnailManager.find(anime.url, "${ep.name}-$DEFAULT_THUMBNAIL_NAME")
+                                    val existingThumbnail = thumbnailManager.find(
+                                        anime.url,
+                                        "${ep.name}-$DEFAULT_THUMBNAIL_NAME",
+                                    )
                                     val resultFile = if (existingThumbnail != null) {
                                         existingThumbnail
                                     } else {
