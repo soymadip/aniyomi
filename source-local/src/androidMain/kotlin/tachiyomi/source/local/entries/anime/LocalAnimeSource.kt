@@ -13,9 +13,15 @@ import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.util.lang.compareToCaseInsensitiveNaturalOrder
 import eu.kanade.tachiyomi.util.storage.toFFmpegString
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
 import logcat.LogPriority
@@ -26,7 +32,13 @@ import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.system.logcat
 import tachiyomi.core.metadata.tachiyomi.AnimeDetails
 import tachiyomi.core.metadata.tachiyomi.EpisodeDetails
+import tachiyomi.domain.entries.anime.interactor.GetAnimeByUrlAndSourceId
 import tachiyomi.domain.entries.anime.model.Anime
+import tachiyomi.domain.entries.anime.model.AnimeUpdate
+import tachiyomi.domain.entries.anime.repository.AnimeRepository
+import tachiyomi.domain.items.episode.interactor.GetEpisodeByUrlAndAnimeId
+import tachiyomi.domain.items.episode.interactor.UpdateEpisode
+import tachiyomi.domain.items.episode.model.EpisodeUpdate
 import tachiyomi.domain.items.episode.service.EpisodeRecognition
 import tachiyomi.i18n.aniyomi.AYMR
 import tachiyomi.source.local.filter.anime.AnimeOrderBy
@@ -39,6 +51,7 @@ import uy.kohesive.injekt.injectLazy
 import java.io.File
 import java.io.InputStream
 import java.text.SimpleDateFormat
+import java.time.Instant
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
@@ -53,6 +66,13 @@ actual class LocalAnimeSource(
 ) : AnimeSource, UnmeteredSource {
 
     private val json: Json by injectLazy()
+    private val getAnimeByUrlAndSourceId: GetAnimeByUrlAndSourceId by injectLazy()
+    private val getEpisodeByUrlAndAnimeId: GetEpisodeByUrlAndAnimeId by injectLazy()
+    private val updateEpisode: UpdateEpisode by injectLazy()
+    private val animeRepository: AnimeRepository by injectLazy()
+
+    private val thumbnailScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val thumbnailSemaphore = Semaphore(2)
 
     @Suppress("PrivatePropertyName")
     private val PopularFilters = AnimeFilterList(AnimeOrderBy.Popular(context))
@@ -268,13 +288,44 @@ actual class LocalAnimeSource(
                     val thumbnailFile = thumbnailManager.find(anime.url, "${this.name}-$DEFAULT_THUMBNAIL_NAME")
                     if (thumbnailFile != null) {
                         this.preview_url = thumbnailFile.uri.toString()
-                    } else if (this.preview_url == null) {
-                        try {
-                            val tempFileSuffix = anime.title + this.name + DEFAULT_THUMBNAIL_NAME
-                            val updateThumbnail: (InputStream) -> Unit = { thumbnailManager.update(anime, this, it) }
-                            updateImageFromVideo(this, anime, tempFileSuffix, updateThumbnail)
-                        } catch (e: Exception) {
-                            logcat(LogPriority.ERROR) { "Couldn't extract thumbnail from video: $e" }
+                    } else {
+                        val ep = this
+                        thumbnailScope.launch {
+                            thumbnailSemaphore.withPermit {
+                                try {
+                                    val existingThumbnail = thumbnailManager.find(anime.url, "${ep.name}-$DEFAULT_THUMBNAIL_NAME")
+                                    val resultFile = if (existingThumbnail != null) {
+                                        existingThumbnail
+                                    } else {
+                                        val tempFileSuffix = anime.title + ep.name + DEFAULT_THUMBNAIL_NAME
+                                        var updatedFile: UniFile? = null
+                                        val updateThumbnail: (InputStream) -> Unit = { inputStream ->
+                                            updatedFile = thumbnailManager.update(anime, ep, inputStream)
+                                        }
+                                        updateImageFromVideo(ep, anime, tempFileSuffix, updateThumbnail)
+                                        updatedFile
+                                    }
+
+                                    if (resultFile != null) {
+                                        val previewUri = resultFile.uri.toString()
+                                        ep.preview_url = previewUri
+                                        val dbAnime = getAnimeByUrlAndSourceId.await(anime.url, ID)
+                                        if (dbAnime != null) {
+                                            val dbEpisode = getEpisodeByUrlAndAnimeId.await(ep.url, dbAnime.id)
+                                            if (dbEpisode != null) {
+                                                updateEpisode.await(
+                                                    EpisodeUpdate(
+                                                        id = dbEpisode.id,
+                                                        previewUrl = previewUri,
+                                                    ),
+                                                )
+                                            }
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    logcat(LogPriority.ERROR) { "Couldn't extract thumbnail from video: $e" }
+                                }
+                            }
                         }
                     }
                 }
@@ -289,14 +340,39 @@ actual class LocalAnimeSource(
         if (existingCover != null) {
             anime.thumbnail_url = existingCover.uri.toString()
         } else {
-            try {
-                episodes.lastOrNull()?.let { episode ->
-                    val tempFileSuffix = anime.title + DEFAULT_COVER_NAME
-                    val updateCover: (InputStream) -> Unit = { coverManager.update(anime, it) }
-                    updateImageFromVideo(episode, anime, tempFileSuffix, updateCover)
+            episodes.lastOrNull()?.let { episode ->
+                thumbnailScope.launch {
+                    thumbnailSemaphore.withPermit {
+                        try {
+                            val currentCover = coverManager.find(anime.url)
+                            val coverFile = if (currentCover != null) {
+                                currentCover
+                            } else {
+                                val tempFileSuffix = anime.title + DEFAULT_COVER_NAME
+                                val updateCover: (InputStream) -> Unit = { coverManager.update(anime, it) }
+                                updateImageFromVideo(episode, anime, tempFileSuffix, updateCover)
+                                coverManager.find(anime.url)
+                            }
+
+                            if (coverFile != null) {
+                                val coverUri = coverFile.uri.toString()
+                                anime.thumbnail_url = coverUri
+                                val dbAnime = getAnimeByUrlAndSourceId.await(anime.url, ID)
+                                if (dbAnime != null) {
+                                    animeRepository.updateAnime(
+                                        AnimeUpdate(
+                                            id = dbAnime.id,
+                                            thumbnailUrl = coverUri,
+                                            coverLastModified = Instant.now().toEpochMilli(),
+                                        ),
+                                    )
+                                }
+                            }
+                        } catch (e: Exception) {
+                            logcat(LogPriority.ERROR) { "Couldn't extract cover from video: $e" }
+                        }
+                    }
                 }
-            } catch (e: Exception) {
-                logcat(LogPriority.ERROR) { "Couldn't extract cover from video: $e" }
             }
         }
 
@@ -305,14 +381,39 @@ actual class LocalAnimeSource(
         if (existingBackground != null) {
             anime.background_url = existingBackground.uri.toString()
         } else {
-            try {
-                episodes.lastOrNull()?.let { episode ->
-                    val tempFileSuffix = anime.title + DEFAULT_BACKGROUND_NAME
-                    val updateBackground: (InputStream) -> Unit = { backgroundManager.update(anime, it) }
-                    updateImageFromVideo(episode, anime, tempFileSuffix, updateBackground)
+            episodes.lastOrNull()?.let { episode ->
+                thumbnailScope.launch {
+                    thumbnailSemaphore.withPermit {
+                        try {
+                            val currentBg = backgroundManager.find(anime.url)
+                            val bgFile = if (currentBg != null) {
+                                currentBg
+                            } else {
+                                val tempFileSuffix = anime.title + DEFAULT_BACKGROUND_NAME
+                                val updateBackground: (InputStream) -> Unit = { backgroundManager.update(anime, it) }
+                                updateImageFromVideo(episode, anime, tempFileSuffix, updateBackground)
+                                backgroundManager.find(anime.url)
+                            }
+
+                            if (bgFile != null) {
+                                val bgUri = bgFile.uri.toString()
+                                anime.background_url = bgUri
+                                val dbAnime = getAnimeByUrlAndSourceId.await(anime.url, ID)
+                                if (dbAnime != null) {
+                                    animeRepository.updateAnime(
+                                        AnimeUpdate(
+                                            id = dbAnime.id,
+                                            backgroundUrl = bgUri,
+                                            backgroundLastModified = Instant.now().toEpochMilli(),
+                                        ),
+                                    )
+                                }
+                            }
+                        } catch (e: Exception) {
+                            logcat(LogPriority.ERROR) { "Couldn't extract background from video: $e" }
+                        }
+                    }
                 }
-            } catch (e: Exception) {
-                logcat(LogPriority.ERROR) { "Couldn't extract background from video: $e" }
             }
         }
 
@@ -343,25 +444,29 @@ actual class LocalAnimeSource(
             "tmp_",
             tempFileSuffix,
         )
-        val outFile = tempFile.path
+        try {
+            val outFile = tempFile.path
 
-        val episodeName = episode.url.split('/', limit = 2).last()
-        val animeDir = fileSystem.getAnimeDirectory(anime.url)!!
-        val episodeFile = animeDir.findFile(episodeName)!!
-        val episodeFilename = { episodeFile.toFFmpegString(context) }
+            val episodeName = episode.url.split('/', limit = 2).last()
+            val animeDir = fileSystem.getAnimeDirectory(anime.url)!!
+            val episodeFile = animeDir.findFile(episodeName)!!
+            val episodeFilename = { episodeFile.toFFmpegString(context) }
 
-        val ffProbe = com.arthenica.ffmpegkit.FFprobeKit.execute(
-            "-v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \"${episodeFilename()}\"",
-        )
-        val duration = ffProbe.allLogsAsString.trim().toFloat()
-        val second = duration.toInt() / 2
+            val ffProbe = com.arthenica.ffmpegkit.FFprobeKit.execute(
+                "-v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \"${episodeFilename()}\"",
+            )
+            val duration = ffProbe.allLogsAsString.trim().toFloat()
+            val second = duration.toInt() / 2
 
-        com.arthenica.ffmpegkit.FFmpegKit.execute(
-            "-ss $second -i \"${episodeFilename()}\" -frames:v 1 -update true \"$outFile\" -y",
-        )
+            com.arthenica.ffmpegkit.FFmpegKit.execute(
+                "-ss $second -i \"${episodeFilename()}\" -frames:v 1 -update true \"$outFile\" -y",
+            )
 
-        if (tempFile.length() > 0L) {
-            updateImage(tempFile.inputStream())
+            if (tempFile.length() > 0L) {
+                updateImage(tempFile.inputStream())
+            }
+        } finally {
+            tempFile.delete()
         }
     }
 
