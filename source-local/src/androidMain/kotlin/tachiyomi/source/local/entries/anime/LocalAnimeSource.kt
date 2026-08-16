@@ -342,7 +342,7 @@ actual class LocalAnimeSource(
                                 val previewUri = resultFile.uri.toString()
                                 ep.preview_url = previewUri
                                 val dbAnime = getAnimeByUrlAndSourceId.await(anime.url, ID)
-                                
+
                                 if (dbAnime != null) {
                                     val dbEpisode = getEpisodeByUrlAndAnimeId.await(ep.url, dbAnime.id)
                                     if (dbEpisode != null) {
