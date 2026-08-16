@@ -198,15 +198,19 @@ actual class LocalAnimeSource(
 
     // Anime details related
     private suspend fun getOldAnimeDetails(anime: SAnime): SAnime = withIOContext {
-        coverManager.find(anime.url)?.let {
+        val animeDirFiles = fileSystem.getFilesInAnimeDirectory(anime.url)
+
+        animeDirFiles.firstOrNull {
+            it.isFile && it.nameWithoutExtension.equals("cover", ignoreCase = true)
+        }?.let {
             anime.thumbnail_url = it.uri.toString()
         }
 
-        backgroundManager.find(anime.url)?.let {
+        animeDirFiles.firstOrNull {
+            it.isFile && it.nameWithoutExtension.equals("background", ignoreCase = true)
+        }?.let {
             anime.background_url = it.uri.toString()
         }
-
-        val animeDirFiles = fileSystem.getFilesInAnimeDirectory(anime.url)
 
         animeDirFiles
             .firstOrNull { it.extension == "json" && it.nameWithoutExtension == "details" }
@@ -250,14 +254,22 @@ actual class LocalAnimeSource(
 
     // Episodes
     private suspend fun getOldEpisodeList(anime: SAnime): List<SEpisode> = withIOContext {
-        val episodesData = fileSystem.getFilesInAnimeDirectory(anime.url)
+        val animeDir = fileSystem.getAnimeDirectory(anime.url)
+        val filesInAnimeDir = animeDir?.listFiles().orEmpty().toList()
+        val thumbnailsDirFiles = animeDir?.findFile(THUMBNAILS_DIR)?.listFiles().orEmpty().toList()
+
+        val episodesData = filesInAnimeDir
             .firstOrNull {
                 it.extension == "json" && it.nameWithoutExtension == "episodes"
             }?.let { file ->
                 json.decodeFromStream<List<EpisodeDetails>>(file.openInputStream())
             }
 
-        val episodes = fileSystem.getFilesInAnimeDirectory(anime.url)
+        val thumbnailFilesMap = (thumbnailsDirFiles + filesInAnimeDir)
+            .filter { it.isFile }
+            .associateBy { it.nameWithoutExtension.orEmpty().lowercase() }
+
+        val episodes = filesInAnimeDir
             // Only keep supported formats
             .filterNot { it.name.orEmpty().startsWith('.') }
             .filter { ArchiveAnime.isSupported(it) }
@@ -285,7 +297,9 @@ actual class LocalAnimeSource(
                     }
 
                     // Generate the preview from the episode if not available
-                    val thumbnailFile = thumbnailManager.find(anime.url, "${this.name}-$DEFAULT_THUMBNAIL_NAME")
+                    val thumbnailName = "${this.name}-$DEFAULT_THUMBNAIL_NAME".substringBeforeLast('.').lowercase()
+                    val thumbnailFile = thumbnailFilesMap[thumbnailName]
+
                     if (thumbnailFile != null) {
                         this.preview_url = thumbnailFile.uri.toString()
                     } else {
@@ -339,9 +353,12 @@ actual class LocalAnimeSource(
             }
 
         // Generate the cover from the first episode found if not available
-        val existingCover = coverManager.find(anime.url)
-        if (existingCover != null) {
-            anime.thumbnail_url = existingCover.uri.toString()
+        val coverFile = filesInAnimeDir.firstOrNull {
+            it.isFile &&
+                it.nameWithoutExtension.equals("cover", ignoreCase = true)
+        }
+        if (coverFile != null) {
+            anime.thumbnail_url = coverFile.uri.toString()
         } else {
             episodes.lastOrNull()?.let { episode ->
                 thumbnailScope.launch {
@@ -380,9 +397,13 @@ actual class LocalAnimeSource(
         }
 
         // Generate the background from the first episode found if not available
-        val existingBackground = backgroundManager.find(anime.url)
-        if (existingBackground != null) {
-            anime.background_url = existingBackground.uri.toString()
+        val backgroundFile = filesInAnimeDir.firstOrNull {
+            it.isFile &&
+                it.nameWithoutExtension.equals("background", ignoreCase = true)
+        }
+
+        if (backgroundFile != null) {
+            anime.background_url = backgroundFile.uri.toString()
         } else {
             episodes.lastOrNull()?.let { episode ->
                 thumbnailScope.launch {
