@@ -40,6 +40,7 @@ import tachiyomi.domain.items.episode.interactor.GetEpisodeByUrlAndAnimeId
 import tachiyomi.domain.items.episode.interactor.UpdateEpisode
 import tachiyomi.domain.items.episode.model.EpisodeUpdate
 import tachiyomi.domain.items.episode.service.EpisodeRecognition
+import tachiyomi.domain.library.service.LibraryPreferences
 import tachiyomi.i18n.aniyomi.AYMR
 import tachiyomi.source.local.filter.anime.AnimeOrderBy
 import tachiyomi.source.local.image.anime.LocalAnimeBackgroundManager
@@ -70,6 +71,7 @@ actual class LocalAnimeSource(
     private val getEpisodeByUrlAndAnimeId: GetEpisodeByUrlAndAnimeId by injectLazy()
     private val updateEpisode: UpdateEpisode by injectLazy()
     private val animeRepository: AnimeRepository by injectLazy()
+    private val libraryPreferences: LibraryPreferences by injectLazy()
 
     private val thumbnailScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val thumbnailSemaphore = Semaphore(2)
@@ -302,7 +304,7 @@ actual class LocalAnimeSource(
 
                     if (thumbnailFile != null) {
                         this.preview_url = thumbnailFile.uri.toString()
-                    } else {
+                    } else if (libraryPreferences.generateLocalThumbnails().get()) {
                         val ep = this
                         thumbnailScope.launch {
                             thumbnailSemaphore.withPermit {
@@ -359,7 +361,7 @@ actual class LocalAnimeSource(
         }
         if (coverFile != null) {
             anime.thumbnail_url = coverFile.uri.toString()
-        } else {
+        } else if (libraryPreferences.generateLocalThumbnails().get()) {
             episodes.lastOrNull()?.let { episode ->
                 thumbnailScope.launch {
                     thumbnailSemaphore.withPermit {
@@ -404,7 +406,7 @@ actual class LocalAnimeSource(
 
         if (backgroundFile != null) {
             anime.background_url = backgroundFile.uri.toString()
-        } else {
+        } else if (libraryPreferences.generateLocalThumbnails().get()) {
             episodes.lastOrNull()?.let { episode ->
                 thumbnailScope.launch {
                     thumbnailSemaphore.withPermit {
