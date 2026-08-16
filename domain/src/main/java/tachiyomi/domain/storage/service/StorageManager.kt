@@ -22,40 +22,50 @@ class StorageManager(
 
     private val scope = CoroutineScope(Dispatchers.IO)
 
-    private var baseDir: UniFile? = getBaseDir(storagePreferences.baseStorageDirectory().get())
+    private var baseDir: UniFile? = getBaseDir(storagePreferences.baseStorageDirectory.get())
 
     private val _changes: Channel<Unit> = Channel(Channel.UNLIMITED)
     val changes = _changes.receiveAsFlow()
         .shareIn(scope, SharingStarted.Lazily, 1)
 
     init {
-        storagePreferences.baseStorageDirectory().changes()
+        setupDirectories(baseDir)
+        storagePreferences.baseStorageDirectory.changes()
             .drop(1)
             .distinctUntilChanged()
             .onEach { uri ->
                 baseDir = getBaseDir(uri)
-                baseDir?.let { parent ->
-                    parent.createDirectory(AUTOMATIC_BACKUPS_PATH)
-                    parent.createDirectory(LOCAL_SOURCE_PATH)
-                    parent.createDirectory(LOCAL_ANIMESOURCE_PATH)
-                    parent.createDirectory(DOWNLOADS_PATH).also {
-                        DiskUtil.createNoMediaFile(it, context)
-                    }
-                    parent.createDirectory(MPV_CONFIG_PATH)?.let { mpvDir ->
-                        mpvDir.createDirectory(FONTS_PATH)
-                        mpvDir.createDirectory(SCRIPTS_PATH)
-                        mpvDir.createDirectory(SCRIPT_OPTS_PATH)
-                        mpvDir.createDirectory(SHADERS_PATH)
-                    }
-                }
+                setupDirectories(baseDir)
                 _changes.send(Unit)
             }
             .launchIn(scope)
     }
 
+    private fun setupDirectories(parent: UniFile?) {
+        parent?.let { p ->
+            p.createDirectory(AUTOMATIC_BACKUPS_PATH)
+            p.createDirectory(LOCAL_SOURCE_PATH)
+            p.createDirectory(LOCAL_ANIMESOURCE_PATH)
+            p.createDirectory(DOWNLOADS_PATH)?.also {
+                DiskUtil.createNoMediaFile(it, context)
+            }
+            p.createDirectory(MPV_CONFIG_PATH)?.let { mpvDir ->
+                mpvDir.createDirectory(FONTS_PATH)
+                mpvDir.createDirectory(SCRIPTS_PATH)
+                mpvDir.createDirectory(SCRIPT_OPTS_PATH)
+                mpvDir.createDirectory(SHADERS_PATH)
+            }
+        }
+    }
+
     private fun getBaseDir(uri: String): UniFile? {
-        return UniFile.fromUri(context, uri.toUri())
-            .takeIf { it?.exists() == true }
+        val file = UniFile.fromUri(context, uri.toUri()) ?: return null
+        if (!file.exists()) {
+            file.filePath?.let { path ->
+                java.io.File(path).mkdirs()
+            }
+        }
+        return file.takeIf { it.exists() }
     }
 
     fun getAutomaticBackupsDirectory(): UniFile? {

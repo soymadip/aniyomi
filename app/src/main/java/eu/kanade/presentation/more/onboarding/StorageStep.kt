@@ -33,7 +33,7 @@ import uy.kohesive.injekt.api.get
 
 internal class StorageStep : OnboardingStep {
 
-    private val storagePref = Injekt.get<StoragePreferences>().baseStorageDirectory()
+    private val storagePref = Injekt.get<StoragePreferences>().baseStorageDirectory
     private val folderProvider = Injekt.get<AndroidStorageFolderProvider>()
 
     private var _isComplete by mutableStateOf(false)
@@ -62,22 +62,21 @@ internal class StorageStep : OnboardingStep {
                 ),
             )
 
-            if (isTvBox) {
-                if (!storagePref.isSet()) {
-                    Button(
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = {
-                            val storage = folderProvider.directory()
-                            if (!storage.exists()) {
-                                storage.mkdirs()
-                            }
-                            storagePref.set(storagePref.get())
-                        },
-                    ) {
-                        Text(stringResource(AYMR.strings.onboarding_storage_action_create_folder))
-                    }
+            if (!storagePref.isSet()) {
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        val storage = folderProvider.directory()
+                        if (!storage.exists()) {
+                            storage.mkdirs()
+                        }
+                        storagePref.set(storagePref.get())
+                    },
+                ) {
+                    Text(stringResource(AYMR.strings.onboarding_storage_action_create_folder))
                 }
-            } else {
+            }
+            if (!isTvBox) {
                 Button(
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
