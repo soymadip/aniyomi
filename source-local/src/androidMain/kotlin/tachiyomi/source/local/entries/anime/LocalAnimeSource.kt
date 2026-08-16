@@ -298,54 +298,12 @@ actual class LocalAnimeSource(
                         }
                     }
 
-                    // Generate the preview from the episode if not available
+                    // Generate the preview from the episode if available
                     val thumbnailName = "${this.name}-$DEFAULT_THUMBNAIL_NAME".substringBeforeLast('.').lowercase()
                     val thumbnailFile = thumbnailFilesMap[thumbnailName]
 
                     if (thumbnailFile != null) {
                         this.preview_url = thumbnailFile.uri.toString()
-                    } else if (libraryPreferences.generateLocalThumbnails().get()) {
-                        val ep = this
-                        thumbnailScope.launch {
-                            thumbnailSemaphore.withPermit {
-                                try {
-                                    val existingThumbnail = thumbnailManager.find(
-                                        anime.url,
-                                        "${ep.name}-$DEFAULT_THUMBNAIL_NAME",
-                                    )
-                                    val resultFile = if (existingThumbnail != null) {
-                                        existingThumbnail
-                                    } else {
-                                        val tempFileSuffix = anime.title + ep.name + DEFAULT_THUMBNAIL_NAME
-                                        var updatedFile: UniFile? = null
-                                        val updateThumbnail: (InputStream) -> Unit = { inputStream ->
-                                            updatedFile = thumbnailManager.update(anime, ep, inputStream)
-                                        }
-                                        updateImageFromVideo(ep, anime, tempFileSuffix, updateThumbnail)
-                                        updatedFile
-                                    }
-
-                                    if (resultFile != null) {
-                                        val previewUri = resultFile.uri.toString()
-                                        ep.preview_url = previewUri
-                                        val dbAnime = getAnimeByUrlAndSourceId.await(anime.url, ID)
-                                        if (dbAnime != null) {
-                                            val dbEpisode = getEpisodeByUrlAndAnimeId.await(ep.url, dbAnime.id)
-                                            if (dbEpisode != null) {
-                                                updateEpisode.await(
-                                                    EpisodeUpdate(
-                                                        id = dbEpisode.id,
-                                                        previewUrl = previewUri,
-                                                    ),
-                                                )
-                                            }
-                                        }
-                                    }
-                                } catch (e: Exception) {
-                                    logcat(LogPriority.ERROR) { "Couldn't extract thumbnail from video: $e" }
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -353,6 +311,57 @@ actual class LocalAnimeSource(
                 val e = e2.episode_number.compareTo(e1.episode_number)
                 if (e == 0) e2.name.compareToCaseInsensitiveNaturalOrder(e1.name) else e
             }
+
+        val missingThumbnails = episodes.filter { it.preview_url.isNullOrBlank() }
+        if (missingThumbnails.isNotEmpty() && libraryPreferences.generateLocalThumbnails().get()) {
+            val dbAnime = getAnimeByUrlAndSourceId.await(anime.url, ID)
+            val sortDescending = dbAnime?.sortDescending() ?: true
+            val orderedMissingThumbnails = if (sortDescending) missingThumbnails else missingThumbnails.reversed()
+
+            orderedMissingThumbnails.forEach { ep ->
+                thumbnailScope.launch {
+                    thumbnailSemaphore.withPermit {
+                        try {
+                            val existingThumbnail = thumbnailManager.find(
+                                anime.url,
+                                "${ep.name}-$DEFAULT_THUMBNAIL_NAME",
+                            )
+                            val resultFile = if (existingThumbnail != null) {
+                                existingThumbnail
+                            } else {
+                                val tempFileSuffix = anime.title + ep.name + DEFAULT_THUMBNAIL_NAME
+                                var updatedFile: UniFile? = null
+                                val updateThumbnail: (InputStream) -> Unit = { inputStream ->
+                                    updatedFile = thumbnailManager.update(anime, ep, inputStream)
+                                }
+                                updateImageFromVideo(ep, anime, tempFileSuffix, updateThumbnail)
+                                updatedFile
+                            }
+
+                            if (resultFile != null) {
+                                val previewUri = resultFile.uri.toString()
+                                ep.preview_url = previewUri
+                                val dbAnime = getAnimeByUrlAndSourceId.await(anime.url, ID)
+                                
+                                if (dbAnime != null) {
+                                    val dbEpisode = getEpisodeByUrlAndAnimeId.await(ep.url, dbAnime.id)
+                                    if (dbEpisode != null) {
+                                        updateEpisode.await(
+                                            EpisodeUpdate(
+                                                id = dbEpisode.id,
+                                                previewUrl = previewUri,
+                                            ),
+                                        )
+                                    }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            logcat(LogPriority.ERROR) { "Couldn't extract thumbnail from video: $e" }
+                        }
+                    }
+                }
+            }
+        }
 
         // Generate the cover from the first episode found if not available
         val coverFile = filesInAnimeDir.firstOrNull {
